@@ -1,0 +1,50 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+**/secrets/
+**/credentials/
+**/credentials*.json
+**/*secret*.json
+**/.npmrc
+**/.pypirc
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ed25519*
+
+# Local database files and development data
+backend/data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python environments, caches, and test output
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+*.py[cod]
+
+# uv's local binaries and cache
+backend/.tools/
+backend/.uv-cache/
+uv-cache/
+uv-cache-*/
+
+# Frontend dependencies and generated bundles
+frontend/node_modules/
+frontend/dist/
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
