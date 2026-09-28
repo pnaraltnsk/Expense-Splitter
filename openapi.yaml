@@ -1,0 +1,656 @@
+openapi: 3.1.0
+info:
+  title: Owesome Expense Splitter API
+  version: 1.0.0
+  description: >-
+    REST API contract for the Owesome frontend. A group has an owner token and
+    a member token; send the token as a Bearer credential. Owner-only and
+    member-capable operations are marked per operation. The frontend currently
+    uses a local mock; this contract defines the backend it can be wired to.
+servers:
+  - url: https://api.example.com
+    description: Replace with the deployed API origin.
+tags:
+  - name: Groups
+  - name: Members
+  - name: Expenses
+  - name: Balances
+  - name: Settlements
+  - name: Recurring expenses
+security: []
+paths:
+  /groups:
+    post:
+      tags: [Groups]
+      operationId: createGroup
+      summary: Create a group and issue its access links
+      description: Public endpoint. The creator becomes the owner; tokens are returned only at creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGroupRequest'
+      responses:
+        '201':
+          description: Group created, including the owner and member tokens.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedGroup'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /groups/{token}:
+    parameters:
+      - $ref: '#/components/parameters/GroupToken'
+    get:
+      tags: [Groups]
+      operationId: getGroup
+      summary: Get group details, members, expenses, recurring schedules, and settlements
+      description: Requires either token belonging to this group. Sensitive owner-only tokens are never returned by this endpoint.
+      security:
+        - ownerToken: []
+        - memberToken: []
+      responses:
+        '200':
+          description: Group data visible to the credential's role.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /groups/{ownerToken}/members:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+    post:
+      tags: [Members]
+      operationId: addMember
+      summary: Add a named member to a group
+      security:
+        - ownerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMemberRequest'
+      responses:
+        '201':
+          description: Member added.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /groups/{ownerToken}/members/{memberId}:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+      - $ref: '#/components/parameters/MemberId'
+    delete:
+      tags: [Members]
+      operationId: removeMember
+      summary: Remove a group member
+      security:
+        - ownerToken: []
+      responses:
+        '204':
+          description: Member removed. Their references are removed from active group data.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /groups/{ownerToken}/expenses:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+    post:
+      tags: [Expenses]
+      operationId: createExpense
+      summary: Add an expense
+      security:
+        - ownerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpenseInput'
+      responses:
+        '201':
+          description: Expense created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Expense'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /groups/{ownerToken}/expenses/{expenseId}:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+      - $ref: '#/components/parameters/ExpenseId'
+    put:
+      tags: [Expenses]
+      operationId: updateExpense
+      summary: Replace an expense
+      security:
+        - ownerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpenseInput'
+      responses:
+        '200':
+          description: Expense updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Expense'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Expenses]
+      operationId: deleteExpense
+      summary: Delete an expense
+      security:
+        - ownerToken: []
+      responses:
+        '204':
+          description: Expense deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /groups/{token}/balances:
+    parameters:
+      - $ref: '#/components/parameters/GroupToken'
+    get:
+      tags: [Balances]
+      operationId: getBalances
+      summary: Calculate outstanding suggested payments
+      description: Simplification is controlled by the group's simplifyDebts setting. Pending settlements do not change balances; confirmed settlements do.
+      security:
+        - ownerToken: []
+        - memberToken: []
+      responses:
+        '200':
+          description: Current outstanding balances.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /groups/{memberToken}/settlements:
+    parameters:
+      - $ref: '#/components/parameters/MemberToken'
+    post:
+      tags: [Settlements]
+      operationId: reportSettlement
+      summary: Report a payment as paid
+      description: Creates a pending claim. It does not affect balances until an owner confirms it. fromMemberId identifies the participant selected in the member view.
+      security:
+        - ownerToken: []
+        - memberToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportSettlementRequest'
+      responses:
+        '201':
+          description: Settlement reported with pending status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settlement'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /groups/{ownerToken}/settlements/{settlementId}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+      - name: settlementId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Settlements]
+      operationId: confirmSettlement
+      summary: Confirm a reported payment
+      description: Confirmation moves the settlement to confirmed and updates balances.
+      security:
+        - ownerToken: []
+      responses:
+        '200':
+          description: Settlement confirmed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settlement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /groups/{ownerToken}/settings:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+    patch:
+      tags: [Groups]
+      operationId: updateGroupSettings
+      summary: Update group settings
+      security:
+        - ownerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupSettingsPatch'
+      responses:
+        '200':
+          description: Updated group settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /groups/{ownerToken}/recurring-expenses:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+    post:
+      tags: [Recurring expenses]
+      operationId: createRecurringExpense
+      summary: Create a recurring expense schedule
+      description: Creates the schedule only. Automatic posting versus next-instance confirmation remains a backend implementation decision.
+      security:
+        - ownerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecurringExpenseInput'
+      responses:
+        '201':
+          description: Recurring expense schedule created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecurringExpense'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /groups/{ownerToken}/recurring-expenses/{recurringExpenseId}:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+      - name: recurringExpenseId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [Recurring expenses]
+      operationId: deleteRecurringExpense
+      summary: Delete a recurring expense schedule
+      security:
+        - ownerToken: []
+      responses:
+        '204':
+          description: Recurring schedule deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    ownerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque group owner token
+      description: Owner link token; permits all owner operations for this group.
+    memberToken:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque group member token
+      description: Member link token; permits reads and reporting payments only.
+  parameters:
+    GroupToken:
+      name: token
+      in: path
+      required: true
+      description: Owner or member token for the group.
+      schema:
+        type: string
+        minLength: 32
+    OwnerToken:
+      name: ownerToken
+      in: path
+      required: true
+      description: Owner token for the group. The matching Bearer credential must also be supplied.
+      schema:
+        type: string
+        minLength: 32
+    MemberToken:
+      name: memberToken
+      in: path
+      required: true
+      description: Member token (or owner token) for the group. The matching Bearer credential must also be supplied.
+      schema:
+        type: string
+        minLength: 32
+    MemberId:
+      name: memberId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ExpenseId:
+      name: expenseId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    CreateGroupRequest:
+      type: object
+      additionalProperties: false
+      required: [name, currency]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: ISO 4217 currency code used for all group expenses.
+          example: EUR
+    CreatedGroup:
+      allOf:
+        - $ref: '#/components/schemas/Group'
+        - type: object
+          required: [ownerToken, memberToken]
+          properties:
+            ownerToken:
+              type: string
+              description: Secret owner access token. Show once and treat as a credential.
+            memberToken:
+              type: string
+              description: Secret member access token. Show once and treat as a credential.
+    Group:
+      type: object
+      required: [id, name, currency, simplifyDebts, createdAt, members, expenses, settlements, recurringExpenses]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        simplifyDebts:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/Member'
+        expenses:
+          type: array
+          items:
+            $ref: '#/components/schemas/Expense'
+        settlements:
+          type: array
+          items:
+            $ref: '#/components/schemas/Settlement'
+        recurringExpenses:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecurringExpense'
+    Member:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+    AddMemberRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+    ExpenseInput:
+      type: object
+      additionalProperties: false
+      required: [description, amount, category, date, payers, participants, splitType]
+      properties:
+        description:
+          type: string
+          minLength: 1
+          maxLength: 240
+        amount:
+          type: number
+          exclusiveMinimum: 0
+        category:
+          type: string
+          enum: [Food, Transport, Accommodation, Utilities, Other]
+        date:
+          type: string
+          format: date
+        payers:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ExpensePayer'
+        participants:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+        splitType:
+          type: string
+          enum: [equal, exact, percentage]
+        shares:
+          type: object
+          description: Required for exact and percentage splits; keys are participant IDs. Exact values sum to amount; percentage values sum to 100.
+          additionalProperties:
+            type: number
+            minimum: 0
+    ExpensePayer:
+      type: object
+      additionalProperties: false
+      required: [memberId, amount]
+      properties:
+        memberId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          exclusiveMinimum: 0
+    Expense:
+      allOf:
+        - $ref: '#/components/schemas/ExpenseInput'
+        - type: object
+          required: [id, createdAt, updatedAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+    BalanceResponse:
+      type: object
+      required: [currency, simplifyDebts, balances]
+      properties:
+        currency:
+          type: string
+        simplifyDebts:
+          type: boolean
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Balance'
+    Balance:
+      type: object
+      required: [fromMemberId, toMemberId, amount]
+      properties:
+        fromMemberId:
+          type: string
+          format: uuid
+        toMemberId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          exclusiveMinimum: 0
+    ReportSettlementRequest:
+      type: object
+      additionalProperties: false
+      required: [fromMemberId, toMemberId, amount]
+      properties:
+        fromMemberId:
+          type: string
+          format: uuid
+          description: Member reporting that they paid. The backend should ensure this member is a participant in the group.
+        toMemberId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          exclusiveMinimum: 0
+    Settlement:
+      type: object
+      required: [id, fromMemberId, toMemberId, amount, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fromMemberId:
+          type: string
+          format: uuid
+        toMemberId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          exclusiveMinimum: 0
+        status:
+          type: string
+          enum: [pending, confirmed]
+        createdAt:
+          type: string
+          format: date-time
+        confirmedAt:
+          type: [string, 'null']
+          format: date-time
+    GroupSettingsPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        simplifyDebts:
+          type: boolean
+    GroupSettings:
+      type: object
+      required: [simplifyDebts]
+      properties:
+        simplifyDebts:
+          type: boolean
+    RecurringExpenseInput:
+      type: object
+      additionalProperties: false
+      required: [description, amount, category, interval]
+      properties:
+        description:
+          type: string
+          minLength: 1
+          maxLength: 240
+        amount:
+          type: number
+          exclusiveMinimum: 0
+        category:
+          type: string
+          enum: [Food, Transport, Accommodation, Utilities, Other]
+        interval:
+          type: string
+          enum: [weekly, monthly, yearly]
+    RecurringExpense:
+      allOf:
+        - $ref: '#/components/schemas/RecurringExpenseInput'
+        - type: object
+          required: [id, createdAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+  responses:
+    BadRequest:
+      description: Invalid request data or split totals do not match the expense total.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing, invalid, or insufficient token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Group resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
