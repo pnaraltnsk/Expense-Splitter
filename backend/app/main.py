@@ -222,6 +222,13 @@ def get_group(token: Annotated[str, Path(min_length=32)], credentials: Annotated
     return response
 
 
+@app.delete("/groups/{token}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteGroup")
+def delete_group(token: Annotated[str, Path(min_length=32)], credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> Response:
+    group, _ = authenticated_group(token, credentials, required_role="owner")
+    store.delete_group(group["id"])
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.get("/groups/{ownerToken}/links", operation_id="getGroupInviteLinks")
 def get_group_invite_links(ownerToken: str, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
     group, _ = authenticated_group(ownerToken, credentials, required_role="owner")

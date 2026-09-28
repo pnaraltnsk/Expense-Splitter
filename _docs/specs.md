@@ -33,7 +33,8 @@ There is no traditional login (no email/password, no user accounts). Instead:
 - The app remembers groups opened in the current browser so they can be reopened without pasting the link again.
 - The welcome screen must offer an **Open an existing group** option that accepts a full owner/member invite link or a token. Opening an owner link restores creator access; opening a member link restores member access.
 - Group data and token mappings must survive backend process restarts. The mock backend stores them in a local JSON file during development; production must store them in the configured persistent database.
-- Without accounts, a group cannot be recovered by its name. If a user loses every copy of its invite links and clears the browser's saved data, recovery is not possible. The owner link should be treated as the creator's recovery credential and kept somewhere safe.
+- Without accounts, a group cannot be recovered by its name. A member can regain member access using their private member link; only the owner link can restore owner access or delete the group. If all links and browser-saved credentials are lost, recovery is not possible. A future recovery-code flow (or optional accounts) could address this; group-name lookup must never grant access.
+- Group changes should appear on other open clients through periodic refresh. Durable database storage preserves changes across restarts, but live updates still require polling or a push channel such as server-sent events/websockets.
 - Members are represented as **named participants** within a group (not system-wide user accounts). A person picks/is assigned their name within the group context.
 - Links should be unguessable (e.g. UUID or long random token) and shareable (copy link / QR code optional nice-to-have).
 
@@ -184,6 +185,7 @@ Settlement
 
 - `POST /groups` — create group (returns owner_token + member_token)
 - `GET /groups/{token}` — get group details/expenses/balances (behavior depends on owner vs member token)
+- `DELETE /groups/{token}` — permanently delete a group and all its data (owner token only)
 - `GET /groups/{owner_token}/links` — owner-only retrieval of the member invite token, so an owner reopening from a saved owner link can still invite participants
 - `GET /groups/{owner_token}/members/{id}/access-link` — owner-only issuance or retrieval of an individual member access token, including for members created before individual links were introduced
 - `POST /groups/{owner_token}/members` — add member

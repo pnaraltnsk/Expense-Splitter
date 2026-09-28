@@ -96,6 +96,14 @@ class MockStore:
         group_id = self.token_to_group.get(token)
         return self.groups.get(group_id) if group_id else None
 
+    def delete_group(self, group_id: str) -> None:
+        self.groups.pop(group_id, None)
+        for token, mapped_group_id in list(self.token_to_group.items()):
+            if mapped_group_id == group_id:
+                self.token_to_group.pop(token, None)
+                self.token_to_member.pop(token, None)
+        self.save()
+
     def member_id_for_token(self, token: str) -> str | None:
         return self.token_to_member.get(token)
 

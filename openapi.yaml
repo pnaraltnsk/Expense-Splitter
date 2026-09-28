@@ -63,6 +63,18 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Groups]
+      operationId: deleteGroup
+      summary: Permanently delete a group and all associated data
+      description: Owner-only. This permanently deletes the group, members, expenses, recurring schedules, and settlement history.
+      security:
+        - ownerToken: []
+      responses:
+        '204':
+          description: Group deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /groups/{ownerToken}/links:
     parameters:
       - $ref: '#/components/parameters/OwnerToken'

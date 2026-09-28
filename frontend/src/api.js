@@ -218,6 +218,20 @@ export const api = {
     return this.getApp();
   },
 
+  async deleteGroup() {
+    const state = readState();
+    const group = activeRef(state);
+    const token = ownerToken(group);
+    await request(`/groups/${encodeURIComponent(token)}`, { token, method: 'DELETE' });
+    state.groups = state.groups.filter(item => item.id !== group.id);
+    delete state.memberIds[group.id];
+    state.activeGroupId = state.groups[0]?.id || null;
+    state.role = state.activeGroupId && !state.groups[0].ownerToken ? 'member' : 'owner';
+    state.currentMemberId = state.activeGroupId ? state.memberIds[state.activeGroupId] || null : null;
+    writeState(state);
+    return this.getApp();
+  },
+
   async saveExpense(input) {
     const group = activeRef(readState());
     const token = ownerToken(group);
