@@ -25,9 +25,11 @@ A general-purpose expense splitting application supporting multiple independent 
 There is no traditional login (no email/password, no user accounts). Instead:
 
 - Each group, on creation, generates **two secret links (tokens)**:
-  - **Owner link** — full access (create/edit/delete expenses, manage members, edit group settings, approve settlements)
-  - **Member link** — restricted access (view expenses/balances, add themselves as a payer/participant on new expenses per group rules, mark their own debts as "paid")
+  - **Owner link** — full group management access; the creator can confirm receipt only when they are the payment recipient
+  - **Member invite link** — shared access to view the group and join by name
+  - **Individual member access link** — private access for one participant to report their own payments and confirm payments owed to them
 - Anyone with a link has the corresponding access level — access is via possession of the secret link/token, not identity verification.
+- The shared member invite link identifies the group, not a participant. Joining creates a private, unguessable member access link tied to that participant; save and keep it private. This lets the backend verify which member is acting without adding accounts or passwords.
 - The app remembers groups opened in the current browser so they can be reopened without pasting the link again.
 - The welcome screen must offer an **Open an existing group** option that accepts a full owner/member invite link or a token. Opening an owner link restores creator access; opening a member link restores member access.
 - Group data and token mappings must survive backend process restarts. The mock backend stores them in a local JSON file during development; production must store them in the configured persistent database.
@@ -43,7 +45,7 @@ There is no traditional login (no email/password, no user accounts). Instead:
 | Add/edit/delete expenses | ✅ | ❌ |
 | View expenses & balances | ✅ | ✅ |
 | Mark a debt as "I paid" | ✅ | ✅ (for themself) |
-| Approve/confirm a payment as settled | ✅ | ❌ |
+| Confirm receipt of a reported payment | ✅ (only when the owner is the recipient) | ✅ (only when this member is the recipient) |
 | Manage members (add/remove) | ✅ | ❌ |
 | Toggle debt-simplification setting | ✅ | ❌ |
 
@@ -51,7 +53,7 @@ There is no traditional login (no email/password, no user accounts). Instead:
 
 ## 4. Groups
 
-- A group has: name, currency, creation date, owner link, member link, list of members, list of expenses.
+- A group has: name, currency, creation date, owner link, shared member invite link, individual member access links, list of members, list of expenses.
 - **Currency:** set per group (each group has its own single currency — no multi-currency conversion within a group).
 - **Debt simplification:** togglable per group.
   - Off: shows raw pairwise balances resulting from expense splits.
@@ -63,7 +65,7 @@ There is no traditional login (no email/password, no user accounts). Instead:
 
 - Members are simple named entities scoped to a group (no login).
 - Owner adds/removes members via the owner link.
-- A member "acts as" themselves within the group (e.g. via the member link, they identify which participant they are to mark payments).
+- Members use their own individual access link. The shared invite link does not identify a participant.
 
 ---
 
@@ -105,10 +107,11 @@ There is no traditional login (no email/password, no user accounts). Instead:
 - **Settle-up flow:**
   1. A member marks a debt as "I paid" (self-reported, no proof required).
   2. This creates a **pending settlement** — it does **not** immediately affect balances.
-  3. The **owner must confirm/approve** the settlement before it counts as paid and balances update.
-- This gives the owner a checkpoint against mistaken or false "paid" claims.
+  3. The **recipient of the payment confirms receipt** before it counts as paid and balances update.
+- Owner permissions alone do not allow confirming a payment owed to another member. The member access link proves the recipient's identity for this action.
+- Pending reports cannot collectively exceed the current debt between the two participants. The matching settle action displays **Pending** while a report awaits receipt confirmation.
 - A pending report disables the matching settle action for that debtor/creditor pair. Repeated reports are rejected, and the total of pending reports cannot exceed the outstanding balance.
-- When an owner confirms a report, any legacy pending claims that are no longer covered by the remaining balance are rejected so they cannot be confirmed a second time.
+- When a recipient confirms a report, any legacy pending claims that are no longer covered by the remaining balance are rejected so they cannot be confirmed a second time.
 
 ---
 
@@ -182,14 +185,15 @@ Settlement
 - `POST /groups` — create group (returns owner_token + member_token)
 - `GET /groups/{token}` — get group details/expenses/balances (behavior depends on owner vs member token)
 - `GET /groups/{owner_token}/links` — owner-only retrieval of the member invite token, so an owner reopening from a saved owner link can still invite participants
+- `GET /groups/{owner_token}/members/{id}/access-link` — owner-only issuance or retrieval of an individual member access token, including for members created before individual links were introduced
 - `POST /groups/{owner_token}/members` — add member
 - `DELETE /groups/{owner_token}/members/{id}` — remove member
 - `POST /groups/{owner_token}/expenses` — create expense
 - `PUT /groups/{owner_token}/expenses/{id}` — edit expense
 - `DELETE /groups/{owner_token}/expenses/{id}` — delete expense
 - `GET /groups/{token}/balances` — get current balances (raw or simplified per group setting)
-- `POST /groups/{member_token}/settlements` — member marks a debt as paid
-- `POST /groups/{owner_token}/settlements/{id}/confirm` — owner confirms settlement
+- `POST /groups/{member_token}/settlements` — identified member reports their own debt as paid
+- `POST /groups/{member_token}/settlements/{id}/confirm` — payment recipient confirms settlement using their individual member access link (the owner may confirm only if they are the recipient)
 - `PATCH /groups/{owner_token}/settings` — toggle debt simplification, etc.
 
 Token access uses unguessable owner/member link tokens as Bearer credentials. API path tokens must match the supplied Bearer token. The GET group response reports the access role granted by that token; owner tokens are never returned by group-read or invite-link retrieval responses.

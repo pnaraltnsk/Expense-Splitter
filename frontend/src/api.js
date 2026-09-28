@@ -69,7 +69,7 @@ function normalizeGroup(group, ref, balances) {
 }
 
 async function loadGroup(ref, role) {
-  const token = ref?.[`${role}Token`];
+  const token = role === 'owner' ? ref?.ownerToken : ref?.personalToken || ref?.memberToken;
   if (!token) throw new Error(`This browser doesn't have a ${role} link for this group.`);
   const group = await request(`/groups/${encodeURIComponent(token)}`, { token });
   const balances = await request(`/groups/${encodeURIComponent(token)}/balances`, { token });
@@ -102,9 +102,15 @@ export const api = {
         return { groups: state.groups, activeGroupId: null, role: state.role, currentMemberId: null, error: error.message };
       }
       const accessRole = group.accessRole || linkedRole;
-      const links = accessRole === 'owner' ? { ownerToken: linkedToken } : { memberToken: linkedToken };
+      const links = accessRole === 'owner'
+        ? { ownerToken: linkedToken }
+        : group.accessMemberId ? { personalToken: linkedToken } : { memberToken: linkedToken };
       rememberGroup(state, group, links);
       state.role = accessRole;
+      if (group.accessMemberId) {
+        state.currentMemberId = group.accessMemberId;
+        state.memberIds[group.id] = group.accessMemberId;
+      }
       window.history.replaceState({}, '', `${url.pathname}${url.hash}`);
     }
 
@@ -125,10 +131,9 @@ export const api = {
     }
     const normalized = normalizeGroup(group, ref, balances);
     rememberGroup(state, normalized, savedTokens);
-    const rememberedMember = state.memberIds[normalized.id];
     state.currentMemberId = state.role === 'owner'
       ? normalized.ownerMemberId
-      : normalized.members.some(member => member.id === rememberedMember) ? rememberedMember : null;
+      : normalized.accessMemberId || null;
     state.memberIds[normalized.id] = state.currentMemberId;
     writeState(state);
     return { groups: state.groups, activeGroupId: normalized.id, role: state.role, currentMemberId: state.currentMemberId };
@@ -156,13 +161,12 @@ export const api = {
     const normalized = normalizeGroup(group, {}, balances);
     const tokens = role === 'owner'
       ? { ownerToken: token, ...(await request(`/groups/${encodeURIComponent(token)}/links`, { token })) }
-      : { memberToken: token };
+      : group.accessMemberId ? { personalToken: token } : { memberToken: token };
     rememberGroup(state, normalized, tokens);
     state.role = role;
-    const rememberedMember = state.memberIds[group.id];
     state.currentMemberId = role === 'owner'
       ? group.ownerMemberId
-      : group.members.some(member => member.id === rememberedMember) ? rememberedMember : null;
+      : group.accessMemberId || null;
     state.memberIds[group.id] = state.currentMemberId;
     writeState(state);
     return { groups: state.groups, activeGroupId: group.id, role, currentMemberId: state.currentMemberId };
@@ -189,6 +193,7 @@ export const api = {
     });
     state.role = 'member';
     state.currentMemberId = member.id;
+    group.personalToken = member.accessToken;
     state.memberIds[group.id] = member.id;
     writeState(state);
     return this.getApp();
@@ -250,7 +255,8 @@ export const api = {
   async markPaid({ to, amount }) {
     const state = readState();
     const group = activeRef(state);
-    const token = group[`${state.role}Token`];
+    const token = state.role === 'owner' ? group.ownerToken : group.personalToken;
+    if (!token) throw new Error('Join this group from your member invite link before reporting a payment.');
     await request(`/groups/${encodeURIComponent(token)}/settlements`, {
       token, method: 'POST', body: { fromMemberId: state.currentMemberId, toMemberId: to, amount: Number(amount) },
     });
@@ -258,8 +264,10 @@ export const api = {
   },
 
   async confirmSettlement(id) {
-    const group = activeRef(readState());
-    const token = ownerToken(group);
+    const state = readState();
+    const group = activeRef(state);
+    const token = state.role === 'owner' ? ownerToken(group) : group.personalToken;
+    if (!token) throw new Error('Open your personal member link to confirm this payment.');
     await request(`/groups/${encodeURIComponent(token)}/settlements/${encodeURIComponent(id)}/confirm`, { token, method: 'POST' });
     return this.getApp();
   },
@@ -283,5 +291,15 @@ export const api = {
     const token = ownerToken(group);
     await request(`/groups/${encodeURIComponent(token)}/recurring-expenses/${encodeURIComponent(id)}`, { token, method: 'DELETE' });
     return this.getApp();
+  },
+
+  async getMemberAccessToken(memberId) {
+    const group = activeRef(readState());
+    const token = ownerToken(group);
+    const response = await request(
+      `/groups/${encodeURIComponent(token)}/members/${encodeURIComponent(memberId)}/access-link`,
+      { token },
+    );
+    return response.accessToken;
   },
 };

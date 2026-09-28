@@ -38,6 +38,10 @@ def member_headers(group: dict) -> dict[str, str]:
     return {"Authorization": f"Bearer {group['memberToken']}"}
 
 
+def personal_member_headers(member: dict) -> dict[str, str]:
+    return {"Authorization": f"Bearer {member['accessToken']}"}
+
+
 def test_create_group_returns_group_and_two_secret_tokens(client: TestClient) -> None:
     response = client.post("/groups", json={"name": "Weekend away", "currency": "EUR", "creatorName": "Pat"})
 
@@ -129,6 +133,52 @@ def test_owner_can_add_and_remove_member_but_member_cannot(client: TestClient) -
     assert all(m["id"] != member_id for m in client.get(f"/groups/{group['ownerToken']}", headers=owner_headers(group)).json()["members"])
 
 
+def test_owner_can_issue_a_private_link_for_a_member(client: TestClient) -> None:
+    group = create_group(client)
+    member = client.post(
+        f"/groups/{group['ownerToken']}/members",
+        headers=owner_headers(group),
+        json={"name": "Alex"},
+    ).json()
+    path = f"/groups/{group['ownerToken']}/members/{member['id']}/access-link"
+
+    assert client.get(path, headers=member_headers(group)).status_code == 401
+    link = client.get(path, headers=owner_headers(group))
+    assert link.status_code == 200
+    assert link.json()["accessToken"] == member["accessToken"]
+    details = client.get(
+        f"/groups/{member['accessToken']}",
+        headers=personal_member_headers(member),
+    ).json()
+    assert details["accessMemberId"] == member["id"]
+
+
+def test_legacy_member_gets_private_link_from_owner_instead_of_rejoining(client: TestClient) -> None:
+    group = create_group(client)
+    member = client.post(
+        f"/groups/{group['ownerToken']}/members",
+        headers=owner_headers(group),
+        json={"name": "Alex"},
+    ).json()
+    store.groups[group["id"]]["members"][-1].pop("_accessToken")
+    store.token_to_group.pop(member["accessToken"])
+    store.token_to_member.pop(member["accessToken"])
+    store.save()
+
+    duplicate = client.post(
+        f"/groups/{group['memberToken']}/join",
+        headers=member_headers(group),
+        json={"name": "Alex"},
+    )
+    assert duplicate.status_code == 400
+    assert "private member link" in duplicate.json()["message"].lower()
+    link = client.get(
+        f"/groups/{group['ownerToken']}/members/{member['id']}/access-link",
+        headers=owner_headers(group),
+    )
+    assert link.status_code == 200
+
+
 def test_member_invite_lets_each_person_join_with_their_own_name(client: TestClient) -> None:
     group = create_group(client)
     path = f"/groups/{group['memberToken']}/join"
@@ -136,8 +186,11 @@ def test_member_invite_lets_each_person_join_with_their_own_name(client: TestCli
     joined = client.post(path, headers=member_headers(group), json={"name": "Alex"})
     assert joined.status_code == 201
     assert joined.json()["name"] == "Alex"
+    assert len(joined.json()["accessToken"]) >= 32
     details = client.get(f"/groups/{group['memberToken']}", headers=member_headers(group)).json()
-    assert joined.json() in details["members"]
+    saved_member = next(member for member in details["members"] if member["id"] == joined.json()["id"])
+    assert saved_member["name"] == "Alex"
+    assert "accessToken" not in saved_member
 
 
 def test_owner_can_create_update_and_delete_expense(client: TestClient) -> None:
@@ -202,7 +255,7 @@ def test_balances_include_expense_shares_and_ignore_pending_settlement(client: T
     assert response.json()["balances"] == [{"fromMemberId": other["id"], "toMemberId": owner_id, "amount": 10.0}]
 
 
-def test_settlement_requires_authentication_and_owner_confirmation(client: TestClient) -> None:
+def test_settlement_requires_authentication_and_recipient_confirmation(client: TestClient) -> None:
     group = create_group(client)
     first = group["members"][0]
     second = client.post(f"/groups/{group['ownerToken']}/members", headers=owner_headers(group), json={"name": "Alex"}).json()
@@ -219,15 +272,20 @@ def test_settlement_requires_authentication_and_owner_confirmation(client: TestC
             "splitType": "equal",
         },
     )
-    path = f"/groups/{group['memberToken']}/settlements"
+    path = f"/groups/{second['accessToken']}/settlements"
     payload = {"fromMemberId": second["id"], "toMemberId": first["id"], "amount": 5}
     assert client.post(path, json=payload).status_code == 401
-    reported = client.post(path, headers=member_headers(group), json=payload)
+    assert client.post(
+        f"/groups/{group['memberToken']}/settlements",
+        headers=member_headers(group),
+        json=payload,
+    ).status_code == 401
+    reported = client.post(path, headers=personal_member_headers(second), json=payload)
     assert reported.status_code == 201
     assert reported.json()["status"] == "pending"
     settlement_id = reported.json()["id"]
     confirm_path = f"/groups/{group['ownerToken']}/settlements/{settlement_id}/confirm"
-    assert client.post(confirm_path, headers=member_headers(group)).status_code == 401
+    assert client.post(confirm_path, headers=personal_member_headers(second)).status_code == 401
     confirmed = client.post(confirm_path, headers=owner_headers(group))
     assert confirmed.status_code == 200
     assert confirmed.json()["status"] == "confirmed"
@@ -254,9 +312,9 @@ def test_duplicate_pending_claims_are_rejected(client: TestClient) -> None:
         },
     )
     payload = {"fromMemberId": second["id"], "toMemberId": first["id"], "amount": 5}
-    path = f"/groups/{group['memberToken']}/settlements"
-    claim = client.post(path, headers=member_headers(group), json=payload)
-    duplicate = client.post(path, headers=member_headers(group), json=payload)
+    path = f"/groups/{second['accessToken']}/settlements"
+    claim = client.post(path, headers=personal_member_headers(second), json=payload)
+    duplicate = client.post(path, headers=personal_member_headers(second), json=payload)
     assert claim.status_code == 201
     assert duplicate.status_code == 400
     assert "pending" in duplicate.json()["message"].lower()
@@ -270,6 +328,53 @@ def test_duplicate_pending_claims_are_rejected(client: TestClient) -> None:
     assert client.post(confirm, headers=owner_headers(group)).status_code == 200
     remaining_claim = next(item for item in store.groups[group["id"]]["settlements"] if item["id"] == legacy_duplicate["id"])
     assert remaining_claim["status"] == "rejected"
+
+
+def test_only_the_member_owed_can_confirm_receipt(client: TestClient) -> None:
+    group = create_group(client)
+    owner = group["members"][0]
+    joined = client.post(
+        f"/groups/{group['memberToken']}/join",
+        headers=member_headers(group),
+        json={"name": "Alex"},
+    ).json()
+    client.post(
+        f"/groups/{group['ownerToken']}/expenses",
+        headers=owner_headers(group),
+        json={
+            "description": "Shared lunch",
+            "amount": 10,
+            "category": "Food",
+            "date": "2026-09-28",
+            "payers": [{"memberId": joined["id"], "amount": 10}],
+            "participants": [owner["id"], joined["id"]],
+            "splitType": "equal",
+        },
+    )
+    claim = client.post(
+        f"/groups/{group['ownerToken']}/settlements",
+        headers=owner_headers(group),
+        json={"fromMemberId": owner["id"], "toMemberId": joined["id"], "amount": 5},
+    )
+    assert claim.status_code == 201
+    impersonation = client.post(
+        f"/groups/{joined['accessToken']}/settlements",
+        headers=personal_member_headers(joined),
+        json={"fromMemberId": owner["id"], "toMemberId": joined["id"], "amount": 5},
+    )
+    assert impersonation.status_code == 401
+
+    settlement_id = claim.json()["id"]
+    assert client.post(
+        f"/groups/{group['ownerToken']}/settlements/{settlement_id}/confirm",
+        headers=owner_headers(group),
+    ).status_code == 401
+    confirmed = client.post(
+        f"/groups/{joined['accessToken']}/settlements/{settlement_id}/confirm",
+        headers=personal_member_headers(joined),
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "confirmed"
 
 
 def test_unsimplified_balances_net_opposing_pairwise_debts(client: TestClient) -> None:

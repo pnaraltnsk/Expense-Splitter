@@ -216,6 +216,9 @@ def get_group(token: Annotated[str, Path(min_length=32)], credentials: Annotated
     group, role = authenticated_group(token, credentials)
     response = store.public_group(group)
     response["accessRole"] = role
+    access_member_id = store.member_id_for_token(token)
+    if access_member_id is not None:
+        response["accessMemberId"] = access_member_id
     return response
 
 
@@ -230,29 +233,41 @@ def add_member(ownerToken: str, payload: AddMemberRequest, credentials: Annotate
     group, _ = authenticated_group(ownerToken, credentials, required_role="owner")
     if any(member["name"].casefold() == payload.name.casefold() for member in group["members"]):
         fail(400, "bad_request", "A member with this name already exists")
-    member = {"id": new_id(), "name": payload.name}
-    group["members"].append(member)
-    store.save()
-    return member
+    return store.add_member(group, payload.name)
+
+
+@app.get("/groups/{ownerToken}/members/{memberId}/access-link", operation_id="getMemberAccessLink")
+def get_member_access_link(ownerToken: str, memberId: UUID, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
+    group, _ = authenticated_group(ownerToken, credentials, required_role="owner")
+    try:
+        access_token = store.ensure_member_access_token(group, str(memberId))
+    except KeyError:
+        fail(404, "not_found", "Member not found")
+    return {"accessToken": access_token}
 
 
 @app.post("/groups/{memberToken}/join", status_code=status.HTTP_201_CREATED, operation_id="joinGroup")
 def join_group(memberToken: str, payload: AddMemberRequest, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
     group, role = authenticated_group(memberToken, credentials)
-    if role != "member":
+    if role != "member" or store.member_id_for_token(memberToken) is not None:
         fail(401, "unauthorized", "Use the member invite link to join this group")
-    member = {"id": new_id(), "name": payload.name}
-    group["members"].append(member)
-    store.save()
-    return member
+    if any(member["name"].casefold() == payload.name.casefold() for member in group["members"]):
+        fail(400, "bad_request", "A member with this name already exists. Ask the group owner for your private member link.")
+    return store.add_member(group, payload.name)
 
 
 @app.delete("/groups/{ownerToken}/members/{memberId}", status_code=status.HTTP_204_NO_CONTENT, operation_id="removeMember")
 def remove_member(ownerToken: str, memberId: UUID, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> Response:
     group, _ = authenticated_group(ownerToken, credentials, required_role="owner")
+    if str(memberId) == group["ownerMemberId"]:
+        fail(400, "bad_request", "The group creator cannot be removed")
     member = member_by_id(group, memberId)
     if member is None:
         fail(404, "not_found", "Member not found")
+    for token, associated_member_id in list(store.token_to_member.items()):
+        if associated_member_id == str(memberId):
+            store.token_to_member.pop(token, None)
+            store.token_to_group.pop(token, None)
     group["members"] = [item for item in group["members"] if item["id"] != str(memberId)]
     # Remove expenses involving the removed participant to keep payer and split totals coherent.
     group["expenses"] = [
@@ -313,6 +328,9 @@ def get_balances(token: str, credentials: Annotated[HTTPAuthorizationCredentials
 def report_settlement(memberToken: str, payload: ReportSettlementRequest, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
     group, _ = authenticated_group(memberToken, credentials)
     with settlement_lock:
+        reporting_member_id = store.member_id_for_token(memberToken)
+        if reporting_member_id is None or reporting_member_id != str(payload.fromMemberId):
+            fail(401, "unauthorized", "Use your own member access link to report a payment")
         from_member = member_by_id(group, payload.fromMemberId)
         to_member = member_by_id(group, payload.toMemberId)
         if from_member is None or to_member is None or payload.fromMemberId == payload.toMemberId:
@@ -347,15 +365,18 @@ def report_settlement(memberToken: str, payload: ReportSettlementRequest, creden
         return settlement
 
 
-@app.post("/groups/{ownerToken}/settlements/{settlementId}/confirm", operation_id="confirmSettlement")
-def confirm_settlement(ownerToken: str, settlementId: UUID, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
-    group, _ = authenticated_group(ownerToken, credentials, required_role="owner")
+@app.post("/groups/{memberToken}/settlements/{settlementId}/confirm", operation_id="confirmSettlement")
+def confirm_settlement(memberToken: str, settlementId: UUID, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
+    group, _ = authenticated_group(memberToken, credentials)
     with settlement_lock:
         settlement = next((item for item in group["settlements"] if item["id"] == str(settlementId)), None)
         if settlement is None:
             fail(404, "not_found", "Settlement not found")
         if settlement["status"] != "pending":
             fail(400, "bad_request", "Only pending settlements can be confirmed")
+        confirming_member_id = store.member_id_for_token(memberToken)
+        if confirming_member_id != settlement["toMemberId"]:
+            fail(401, "unauthorized", "Only the member receiving this payment can confirm it")
         balance = next(
             (
                 item for item in calculate_balances(group)

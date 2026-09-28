@@ -51,6 +51,7 @@ paths:
       security:
         - ownerToken: []
         - memberToken: []
+        - memberAccessToken: []
       responses:
         '200':
           description: Group data visible to the credential's role.
@@ -102,7 +103,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Member'
+                $ref: '#/components/schemas/MemberAccess'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -129,7 +130,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Member'
+                $ref: '#/components/schemas/MemberAccess'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -147,6 +148,28 @@ paths:
       responses:
         '204':
           description: Member removed. Their references are removed from active group data.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /groups/{ownerToken}/members/{memberId}/access-link:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+      - $ref: '#/components/parameters/MemberId'
+    get:
+      tags: [Members]
+      operationId: getMemberAccessLink
+      summary: Issue or retrieve a private member access token
+      description: Owner-only. Use this to give existing members their individual identity link.
+      security:
+        - ownerToken: []
+      responses:
+        '200':
+          description: Individual token for the named member.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberAccessToken'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -230,6 +253,7 @@ paths:
       security:
         - ownerToken: []
         - memberToken: []
+        - memberAccessToken: []
       responses:
         '200':
           description: Current outstanding balances.
@@ -246,10 +270,10 @@ paths:
       tags: [Settlements]
       operationId: reportSettlement
       summary: Report a payment as paid
-      description: Creates a pending claim. It does not affect balances until an owner confirms it. Pending claims cannot collectively exceed the outstanding balance for a member pair, preventing duplicate reports.
+      description: Creates a pending claim. It does not affect balances until the payment recipient confirms receipt. Pending claims cannot collectively exceed the outstanding balance for a member pair, preventing duplicate reports.
       security:
         - ownerToken: []
-        - memberToken: []
+        - memberAccessToken: []
       requestBody:
         required: true
         content:
@@ -267,9 +291,9 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
-  /groups/{ownerToken}/settlements/{settlementId}/confirm:
+  /groups/{memberToken}/settlements/{settlementId}/confirm:
     parameters:
-      - $ref: '#/components/parameters/OwnerToken'
+      - $ref: '#/components/parameters/MemberToken'
       - name: settlementId
         in: path
         required: true
@@ -279,10 +303,11 @@ paths:
     post:
       tags: [Settlements]
       operationId: confirmSettlement
-      summary: Confirm a reported payment
-      description: Confirmation moves the settlement to confirmed and updates balances.
+      summary: Confirm receipt of a reported payment
+      description: Only the member identified as the payment recipient may confirm the settlement; owner permissions alone do not grant approval.
       security:
         - ownerToken: []
+        - memberAccessToken: []
       responses:
         '200':
           description: Settlement confirmed.
@@ -375,18 +400,23 @@ components:
       type: http
       scheme: bearer
       bearerFormat: Opaque group owner token
-      description: Owner link token; permits all owner operations for this group.
+      description: Owner link token; permits group administration and confirms payments owed to the creator.
     memberToken:
       type: http
       scheme: bearer
-      bearerFormat: Opaque group member token
-      description: Member link token; permits reads and reporting payments only.
+      bearerFormat: Opaque group member invite token
+      description: Shared invitation token; permits reads and joining but does not identify a specific member.
+    memberAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque individual member token
+      description: Issued after a member joins; identifies that member and permits reads, reporting their own payments, and confirming payments owed to them.
   parameters:
     GroupToken:
       name: token
       in: path
       required: true
-      description: Owner or member token for the group.
+      description: Owner, shared invite, or individual member token for the group.
       schema:
         type: string
         minLength: 32
@@ -402,7 +432,7 @@ components:
       name: memberToken
       in: path
       required: true
-      description: Member token (or owner token) for the group. The matching Bearer credential must also be supplied.
+      description: Member invite or individual member token as allowed by the operation. The matching Bearer credential must also be supplied.
       schema:
         type: string
         minLength: 32
@@ -450,7 +480,7 @@ components:
               description: Secret owner access token. Show once and treat as a credential.
             memberToken:
               type: string
-              description: Secret member access token. Show once and treat as a credential.
+              description: Shared member invite token. The owner can retrieve it again; treat it as a credential.
     Group:
       type: object
       required: [id, name, currency, ownerMemberId, simplifyDebts, createdAt, members, expenses, settlements, recurringExpenses]
@@ -471,6 +501,10 @@ components:
           type: string
           enum: [owner, member]
           description: Present on GET /groups/{token}; identifies the role granted by the supplied token.
+        accessMemberId:
+          type: [string, 'null']
+          format: uuid
+          description: Present when the credential identifies an individual member; omitted for the shared invite token.
         simplifyDebts:
           type: boolean
         createdAt:
@@ -508,8 +542,21 @@ components:
           format: uuid
         name:
           type: string
-          minLength: 1
-          maxLength: 120
+    MemberAccess:
+      allOf:
+        - $ref: '#/components/schemas/Member'
+        - type: object
+          required: [accessToken]
+          properties:
+            accessToken:
+              type: string
+              description: Private per-member credential; never returned in group member lists.
+    MemberAccessToken:
+      type: object
+      required: [accessToken]
+      properties:
+        accessToken:
+          type: string
     AddMemberRequest:
       type: object
       additionalProperties: false
