@@ -1,6 +1,15 @@
 # Owesome API
 
-FastAPI backend for the contract in the repository-root `openapi.yaml`. The current repository is an in-memory mock: all group data is lost when the process restarts. Replace `app.store.MockStore` with a persistent repository when adding PostgreSQL.
+FastAPI backend for the contract in the repository-root `openapi.yaml`. Group data is stored through SQLAlchemy. By default, the app uses SQLite at `backend/data/owesome.db`; the first startup imports groups from the previous `backend/data/groups.json` file if the database is empty.
+
+Set `DATABASE_URL` to select a different SQLAlchemy-supported database. For example, from this directory in PowerShell:
+
+```powershell
+$env:DATABASE_URL = "sqlite:///./data/owesome.db"
+uv run uvicorn app.main:app --reload
+```
+
+For PostgreSQL later, configure a SQLAlchemy URL such as `postgresql+psycopg://user:password@host:5432/database` and add the matching PostgreSQL driver with `uv add psycopg[binary]`. The models use SQLAlchemy's portable JSON type; no SQLite-specific query syntax is used by the repository.
 
 ## Run locally
 

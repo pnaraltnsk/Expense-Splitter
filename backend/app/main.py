@@ -79,7 +79,7 @@ def authenticated_group(
 
 
 def group_by_id(group_id: UUID) -> dict:
-    group = store.groups.get(str(group_id))
+    group = store.group_by_id(str(group_id))
     if group is None:
         fail(404, "not_found", "Group not found")
     return group
@@ -271,10 +271,6 @@ def remove_member(ownerToken: str, memberId: UUID, credentials: Annotated[HTTPAu
     member = member_by_id(group, memberId)
     if member is None:
         fail(404, "not_found", "Member not found")
-    for token, associated_member_id in list(store.token_to_member.items()):
-        if associated_member_id == str(memberId):
-            store.token_to_member.pop(token, None)
-            store.token_to_group.pop(token, None)
     group["members"] = [item for item in group["members"] if item["id"] != str(memberId)]
     # Remove expenses involving the removed participant to keep payer and split totals coherent.
     group["expenses"] = [
@@ -286,7 +282,7 @@ def remove_member(ownerToken: str, memberId: UUID, credentials: Annotated[HTTPAu
         item for item in group["settlements"]
         if item["fromMemberId"] != str(memberId) and item["toMemberId"] != str(memberId)
     ]
-    store.save()
+    store.save(group)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -297,7 +293,7 @@ def create_expense(ownerToken: str, payload: ExpenseInput, credentials: Annotate
     created = now_iso()
     expense = serialize_expense(payload, UUID(new_id()), created, created)
     group["expenses"].insert(0, expense)
-    store.save()
+    store.save(group)
     return expense
 
 
@@ -310,7 +306,7 @@ def update_expense(ownerToken: str, expenseId: UUID, payload: ExpenseInput, cred
         fail(404, "not_found", "Expense not found")
     expense = serialize_expense(payload, expenseId, existing["createdAt"], now_iso())
     group["expenses"][group["expenses"].index(existing)] = expense
-    store.save()
+    store.save(group)
     return expense
 
 
@@ -321,7 +317,7 @@ def delete_expense(ownerToken: str, expenseId: UUID, credentials: Annotated[HTTP
     if existing is None:
         fail(404, "not_found", "Expense not found")
     group["expenses"].remove(existing)
-    store.save()
+    store.save(group)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -368,7 +364,7 @@ def report_settlement(memberToken: str, payload: ReportSettlementRequest, creden
             "confirmedAt": None,
         }
         group["settlements"].append(settlement)
-        store.save()
+        store.save(group)
         return settlement
 
 
@@ -415,7 +411,7 @@ def confirm_settlement(memberToken: str, settlementId: UUID, credentials: Annota
             else:
                 item["status"] = "rejected"
                 item["confirmedAt"] = None
-        store.save()
+        store.save(group)
         return settlement
 
 
@@ -425,7 +421,7 @@ def update_settings(ownerToken: str, payload: GroupSettingsPatch, credentials: A
     if not payload.model_fields_set or payload.simplifyDebts is None:
         fail(400, "bad_request", "At least one supported setting must be provided")
     group["simplifyDebts"] = payload.simplifyDebts
-    store.save()
+    store.save(group)
     return {"simplifyDebts": group["simplifyDebts"]}
 
 
@@ -434,7 +430,7 @@ def create_recurring_expense(ownerToken: str, payload: RecurringExpenseInput, cr
     group, _ = authenticated_group(ownerToken, credentials, required_role="owner")
     schedule = serialize_recurring(payload, UUID(new_id()), now_iso())
     group["recurringExpenses"].append(schedule)
-    store.save()
+    store.save(group)
     return schedule
 
 
@@ -445,5 +441,5 @@ def delete_recurring_expense(ownerToken: str, recurringExpenseId: UUID, credenti
     if schedule is None:
         fail(404, "not_found", "Recurring expense not found")
     group["recurringExpenses"].remove(schedule)
-    store.save()
+    store.save(group)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

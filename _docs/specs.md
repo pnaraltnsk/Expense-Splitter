@@ -13,7 +13,7 @@ A general-purpose expense splitting application supporting multiple independent 
 | Layer | Choice | Notes |
 |---|---|---|
 | Backend | **Python + FastAPI** | Managed with `uv` for dependency/environment management |
-| Database | **PostgreSQL** | Better fit than SQLite for cloud deployment (managed Postgres on Railway/Render is easy; avoids ephemeral filesystem issues) |
+| Database | **SQLite via SQLAlchemy** | Uses `DATABASE_URL` for configuration and SQLAlchemy's portable types so PostgreSQL can be added later |
 | Frontend | **React** | |
 | Styling | **Tailwind CSS** | Lightweight, no component-library overhead |
 | Hosting | **Cloud platform** (e.g. Railway, Render, Vercel for frontend + Railway/Render for backend+DB) | Proper deployment, not just local dev |
@@ -32,7 +32,7 @@ There is no traditional login (no email/password, no user accounts). Instead:
 - The shared member invite link identifies the group, not a participant. Joining creates a private, unguessable member access link tied to that participant; save and keep it private. This lets the backend verify which member is acting without adding accounts or passwords.
 - The app remembers groups opened in the current browser so they can be reopened without pasting the link again.
 - The welcome screen must offer an **Open an existing group** option that accepts a full owner/member invite link or a token. Opening an owner link restores creator access; opening a member link restores member access.
-- Group data and token mappings must survive backend process restarts. The mock backend stores them in a local JSON file during development; production must store them in the configured persistent database.
+- Group data and token mappings must survive backend process restarts. The backend stores them in SQLAlchemy-managed tables using the database selected by `DATABASE_URL` (SQLite by default). The first default startup imports groups from the previous local JSON store if the new database is empty.
 - Without accounts, a group cannot be recovered by its name. A member can regain member access using their private member link; only the owner link can restore owner access or delete the group. If all links and browser-saved credentials are lost, recovery is not possible. A future recovery-code flow (or optional accounts) could address this; group-name lookup must never grant access.
 - Group changes should appear on other open clients through periodic refresh. Durable database storage preserves changes across restarts, but live updates still require polling or a push channel such as server-sent events/websockets.
 - Members are represented as **named participants** within a group (not system-wide user accounts). A person picks/is assigned their name within the group context.
