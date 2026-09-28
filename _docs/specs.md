@@ -107,6 +107,8 @@ There is no traditional login (no email/password, no user accounts). Instead:
   2. This creates a **pending settlement** — it does **not** immediately affect balances.
   3. The **owner must confirm/approve** the settlement before it counts as paid and balances update.
 - This gives the owner a checkpoint against mistaken or false "paid" claims.
+- A pending report disables the matching settle action for that debtor/creditor pair. Repeated reports are rejected, and the total of pending reports cannot exceed the outstanding balance.
+- When an owner confirms a report, any legacy pending claims that are no longer covered by the remaining balance are rejected so they cannot be confirmed a second time.
 
 ---
 

@@ -1,10 +1,11 @@
 from collections.abc import Iterator
+from copy import deepcopy
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.store import MockStore, store
+from app.store import MockStore, new_id, store
 
 
 @pytest.fixture(autouse=True)
@@ -235,7 +236,7 @@ def test_settlement_requires_authentication_and_owner_confirmation(client: TestC
     assert client.post(confirm_path, headers=owner_headers(group)).status_code == 400
 
 
-def test_owner_cannot_confirm_overlapping_pending_claims(client: TestClient) -> None:
+def test_duplicate_pending_claims_are_rejected(client: TestClient) -> None:
     group = create_group(client)
     first = group["members"][0]
     second = client.post(f"/groups/{group['ownerToken']}/members", headers=owner_headers(group), json={"name": "Alex"}).json()
@@ -254,11 +255,21 @@ def test_owner_cannot_confirm_overlapping_pending_claims(client: TestClient) -> 
     )
     payload = {"fromMemberId": second["id"], "toMemberId": first["id"], "amount": 5}
     path = f"/groups/{group['memberToken']}/settlements"
-    claims = [client.post(path, headers=member_headers(group), json=payload).json() for _ in range(2)]
-    confirm = f"/groups/{group['ownerToken']}/settlements/{claims[0]['id']}/confirm"
+    claim = client.post(path, headers=member_headers(group), json=payload)
+    duplicate = client.post(path, headers=member_headers(group), json=payload)
+    assert claim.status_code == 201
+    assert duplicate.status_code == 400
+    assert "pending" in duplicate.json()["message"].lower()
+
+    # Older duplicate rows can exist from before duplicate claims were blocked.
+    legacy_duplicate = deepcopy(claim.json())
+    legacy_duplicate["id"] = new_id()
+    store.groups[group["id"]]["settlements"].append(legacy_duplicate)
+    store.save()
+    confirm = f"/groups/{group['ownerToken']}/settlements/{claim.json()['id']}/confirm"
     assert client.post(confirm, headers=owner_headers(group)).status_code == 200
-    overlapping = f"/groups/{group['ownerToken']}/settlements/{claims[1]['id']}/confirm"
-    assert client.post(overlapping, headers=owner_headers(group)).status_code == 400
+    remaining_claim = next(item for item in store.groups[group["id"]]["settlements"] if item["id"] == legacy_duplicate["id"])
+    assert remaining_claim["status"] == "rejected"
 
 
 def test_unsimplified_balances_net_opposing_pairwise_debts(client: TestClient) -> None:

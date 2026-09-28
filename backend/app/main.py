@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
+from threading import Lock
 from typing import Annotated
 from uuid import UUID
 
@@ -33,6 +34,7 @@ app.add_middleware(
 )
 bearer = HTTPBearer(auto_error=False)
 CENT = Decimal("0.01")
+settlement_lock = Lock()
 
 
 @app.exception_handler(HTTPException)
@@ -310,49 +312,83 @@ def get_balances(token: str, credentials: Annotated[HTTPAuthorizationCredentials
 @app.post("/groups/{memberToken}/settlements", status_code=status.HTTP_201_CREATED, operation_id="reportSettlement")
 def report_settlement(memberToken: str, payload: ReportSettlementRequest, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
     group, _ = authenticated_group(memberToken, credentials)
-    from_member = member_by_id(group, payload.fromMemberId)
-    to_member = member_by_id(group, payload.toMemberId)
-    if from_member is None or to_member is None or payload.fromMemberId == payload.toMemberId:
-        fail(400, "bad_request", "Settlement members must be different members of this group")
-    balance = next((item for item in calculate_balances(group) if item["fromMemberId"] == str(payload.fromMemberId) and item["toMemberId"] == str(payload.toMemberId)), None)
-    if balance is None or Decimal(str(balance["amount"])) < payload.amount:
-        fail(400, "bad_request", "Settlement exceeds the outstanding balance between these members")
-    settlement = {
-        "id": new_id(),
-        "fromMemberId": str(payload.fromMemberId),
-        "toMemberId": str(payload.toMemberId),
-        "amount": decimal_json(payload.amount),
-        "status": "pending",
-        "createdAt": now_iso(),
-        "confirmedAt": None,
-    }
-    group["settlements"].append(settlement)
-    store.save()
-    return settlement
+    with settlement_lock:
+        from_member = member_by_id(group, payload.fromMemberId)
+        to_member = member_by_id(group, payload.toMemberId)
+        if from_member is None or to_member is None or payload.fromMemberId == payload.toMemberId:
+            fail(400, "bad_request", "Settlement members must be different members of this group")
+        balance = next((item for item in calculate_balances(group) if item["fromMemberId"] == str(payload.fromMemberId) and item["toMemberId"] == str(payload.toMemberId)), None)
+        if balance is None:
+            fail(400, "bad_request", "Settlement exceeds the outstanding balance between these members")
+        outstanding = Decimal(str(balance["amount"]))
+        pending_total = sum(
+            (
+                Decimal(str(item["amount"]))
+                for item in group["settlements"]
+                if item["status"] == "pending"
+                and item["fromMemberId"] == str(payload.fromMemberId)
+                and item["toMemberId"] == str(payload.toMemberId)
+            ),
+            Decimal(0),
+        )
+        if pending_total + payload.amount > outstanding:
+            fail(400, "bad_request", "A pending settlement already covers this outstanding balance")
+        settlement = {
+            "id": new_id(),
+            "fromMemberId": str(payload.fromMemberId),
+            "toMemberId": str(payload.toMemberId),
+            "amount": decimal_json(payload.amount),
+            "status": "pending",
+            "createdAt": now_iso(),
+            "confirmedAt": None,
+        }
+        group["settlements"].append(settlement)
+        store.save()
+        return settlement
 
 
 @app.post("/groups/{ownerToken}/settlements/{settlementId}/confirm", operation_id="confirmSettlement")
 def confirm_settlement(ownerToken: str, settlementId: UUID, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
     group, _ = authenticated_group(ownerToken, credentials, required_role="owner")
-    settlement = next((item for item in group["settlements"] if item["id"] == str(settlementId)), None)
-    if settlement is None:
-        fail(404, "not_found", "Settlement not found")
-    if settlement["status"] == "confirmed":
-        fail(400, "bad_request", "Settlement has already been confirmed")
-    balance = next(
-        (
-            item for item in calculate_balances(group)
-            if item["fromMemberId"] == settlement["fromMemberId"]
-            and item["toMemberId"] == settlement["toMemberId"]
-        ),
-        None,
-    )
-    if balance is None or Decimal(str(balance["amount"])) < Decimal(str(settlement["amount"])):
-        fail(400, "bad_request", "Settlement is no longer covered by the outstanding balance")
-    settlement["status"] = "confirmed"
-    settlement["confirmedAt"] = now_iso()
-    store.save()
-    return settlement
+    with settlement_lock:
+        settlement = next((item for item in group["settlements"] if item["id"] == str(settlementId)), None)
+        if settlement is None:
+            fail(404, "not_found", "Settlement not found")
+        if settlement["status"] != "pending":
+            fail(400, "bad_request", "Only pending settlements can be confirmed")
+        balance = next(
+            (
+                item for item in calculate_balances(group)
+                if item["fromMemberId"] == settlement["fromMemberId"]
+                and item["toMemberId"] == settlement["toMemberId"]
+            ),
+            None,
+        )
+        amount = Decimal(str(settlement["amount"]))
+        if balance is None or Decimal(str(balance["amount"])) < amount:
+            fail(400, "bad_request", "Settlement is no longer covered by the outstanding balance")
+        settlement["status"] = "confirmed"
+        settlement["confirmedAt"] = now_iso()
+
+        remaining = Decimal(str(balance["amount"])) - amount
+        competing = sorted(
+            (
+                item for item in group["settlements"]
+                if item["status"] == "pending"
+                and item["fromMemberId"] == settlement["fromMemberId"]
+                and item["toMemberId"] == settlement["toMemberId"]
+            ),
+            key=lambda item: item["createdAt"],
+        )
+        for item in competing:
+            claim_amount = Decimal(str(item["amount"]))
+            if claim_amount <= remaining:
+                remaining -= claim_amount
+            else:
+                item["status"] = "rejected"
+                item["confirmedAt"] = None
+        store.save()
+        return settlement
 
 
 @app.patch("/groups/{ownerToken}/settings", operation_id="updateGroupSettings")

@@ -246,7 +246,7 @@ paths:
       tags: [Settlements]
       operationId: reportSettlement
       summary: Report a payment as paid
-      description: Creates a pending claim. It does not affect balances until an owner confirms it. fromMemberId identifies the participant selected in the member view.
+      description: Creates a pending claim. It does not affect balances until an owner confirms it. Pending claims cannot collectively exceed the outstanding balance for a member pair, preventing duplicate reports.
       security:
         - ownerToken: []
         - memberToken: []
@@ -642,7 +642,7 @@ components:
           exclusiveMinimum: 0
         status:
           type: string
-          enum: [pending, confirmed]
+          enum: [pending, confirmed, rejected]
         createdAt:
           type: string
           format: date-time
