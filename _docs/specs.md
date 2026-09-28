@@ -28,6 +28,10 @@ There is no traditional login (no email/password, no user accounts). Instead:
   - **Owner link** — full access (create/edit/delete expenses, manage members, edit group settings, approve settlements)
   - **Member link** — restricted access (view expenses/balances, add themselves as a payer/participant on new expenses per group rules, mark their own debts as "paid")
 - Anyone with a link has the corresponding access level — access is via possession of the secret link/token, not identity verification.
+- The app remembers groups opened in the current browser so they can be reopened without pasting the link again.
+- The welcome screen must offer an **Open an existing group** option that accepts a full owner/member invite link or a token. Opening an owner link restores creator access; opening a member link restores member access.
+- Group data and token mappings must survive backend process restarts. The mock backend stores them in a local JSON file during development; production must store them in the configured persistent database.
+- Without accounts, a group cannot be recovered by its name. If a user loses every copy of its invite links and clears the browser's saved data, recovery is not possible. The owner link should be treated as the creator's recovery credential and kept somewhere safe.
 - Members are represented as **named participants** within a group (not system-wide user accounts). A person picks/is assigned their name within the group context.
 - Links should be unguessable (e.g. UUID or long random token) and shareable (copy link / QR code optional nice-to-have).
 
@@ -175,6 +179,7 @@ Settlement
 
 - `POST /groups` — create group (returns owner_token + member_token)
 - `GET /groups/{token}` — get group details/expenses/balances (behavior depends on owner vs member token)
+- `GET /groups/{owner_token}/links` — owner-only retrieval of the member invite token, so an owner reopening from a saved owner link can still invite participants
 - `POST /groups/{owner_token}/members` — add member
 - `DELETE /groups/{owner_token}/members/{id}` — remove member
 - `POST /groups/{owner_token}/expenses` — create expense
@@ -185,7 +190,7 @@ Settlement
 - `POST /groups/{owner_token}/settlements/{id}/confirm` — owner confirms settlement
 - `PATCH /groups/{owner_token}/settings` — toggle debt simplification, etc.
 
-*(Exact routes/auth mechanism for token-based access to be refined during implementation — likely token passed as path param, header, or query param.)*
+Token access uses unguessable owner/member link tokens as Bearer credentials. API path tokens must match the supplied Bearer token. The GET group response reports the access role granted by that token; owner tokens are never returned by group-read or invite-link retrieval responses.
 
 ---
 

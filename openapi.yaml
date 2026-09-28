@@ -5,8 +5,8 @@ info:
   description: >-
     REST API contract for the Owesome frontend. A group has an owner token and
     a member token; send the token as a Bearer credential. Owner-only and
-    member-capable operations are marked per operation. The frontend currently
-    uses a local mock; this contract defines the backend it can be wired to.
+    member-capable operations are marked per operation. The development backend
+    persists its mock store locally; production should use the configured database.
 servers:
   - url: https://api.example.com
     description: Replace with the deployed API origin.
@@ -62,6 +62,25 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /groups/{ownerToken}/links:
+    parameters:
+      - $ref: '#/components/parameters/OwnerToken'
+    get:
+      tags: [Groups]
+      operationId: getGroupInviteLinks
+      summary: Retrieve the member invite token for a reopened owner group
+      description: Owner-only. The owner token itself remains private and is never returned here.
+      security:
+        - ownerToken: []
+      responses:
+        '200':
+          description: Member invite token for sharing with participants.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupInviteLinks'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /groups/{ownerToken}/members:
     parameters:
       - $ref: '#/components/parameters/OwnerToken'
@@ -448,6 +467,10 @@ components:
           type: string
           format: uuid
           description: Group participant ID for the creator, used to identify the owner when they open their owner link.
+        accessRole:
+          type: string
+          enum: [owner, member]
+          description: Present on GET /groups/{token}; identifies the role granted by the supplied token.
         simplifyDebts:
           type: boolean
         createdAt:
@@ -469,6 +492,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RecurringExpense'
+    GroupInviteLinks:
+      type: object
+      required: [memberToken]
+      properties:
+        memberToken:
+          type: string
+          description: Secret member invite token. Treat it as a credential.
     Member:
       type: object
       required: [id, name]

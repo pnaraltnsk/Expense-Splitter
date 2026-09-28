@@ -95,22 +95,36 @@ export const api = {
     const linkedToken = linkedRole && url.searchParams.get(linkedRole);
 
     if (linkedToken) {
-      const group = await request(`/groups/${encodeURIComponent(linkedToken)}`, { token: linkedToken });
-      const links = linkedRole === 'owner' ? { ownerToken: linkedToken } : { memberToken: linkedToken };
+      let group;
+      try {
+        group = await request(`/groups/${encodeURIComponent(linkedToken)}`, { token: linkedToken });
+      } catch (error) {
+        return { groups: state.groups, activeGroupId: null, role: state.role, currentMemberId: null, error: error.message };
+      }
+      const accessRole = group.accessRole || linkedRole;
+      const links = accessRole === 'owner' ? { ownerToken: linkedToken } : { memberToken: linkedToken };
       rememberGroup(state, group, links);
-      state.role = linkedRole;
+      state.role = accessRole;
       window.history.replaceState({}, '', `${url.pathname}${url.hash}`);
     }
 
     const ref = state.groups.find(item => item.id === state.activeGroupId) || state.groups[0];
     if (!ref) return { groups: [], activeGroupId: null, role: state.role, currentMemberId: null };
     state.activeGroupId = ref.id;
-    const { group, balances } = await loadGroup(ref, state.role);
+    let loaded;
+    try {
+      loaded = await loadGroup(ref, state.role);
+    } catch (error) {
+      return { groups: state.groups, activeGroupId: null, role: state.role, currentMemberId: null, error: error.message };
+    }
+    const { group, balances } = loaded;
+    let savedTokens = { ownerToken: ref.ownerToken, memberToken: ref.memberToken };
+    if (state.role === 'owner' && !savedTokens.memberToken) {
+      const links = await request(`/groups/${encodeURIComponent(ref.ownerToken)}/links`, { token: ref.ownerToken });
+      savedTokens.memberToken = links.memberToken;
+    }
     const normalized = normalizeGroup(group, ref, balances);
-    rememberGroup(state, normalized, {
-      ownerToken: ref.ownerToken,
-      memberToken: ref.memberToken,
-    });
+    rememberGroup(state, normalized, savedTokens);
     const rememberedMember = state.memberIds[normalized.id];
     state.currentMemberId = state.role === 'owner'
       ? normalized.ownerMemberId
@@ -118,6 +132,40 @@ export const api = {
     state.memberIds[normalized.id] = state.currentMemberId;
     writeState(state);
     return { groups: state.groups, activeGroupId: normalized.id, role: state.role, currentMemberId: state.currentMemberId };
+  },
+
+  async getSavedGroups(error) {
+    const state = readState();
+    return { groups: state.groups, activeGroupId: null, role: state.role, currentMemberId: null, error };
+  },
+
+  async openGroup(invite) {
+    const value = invite.trim();
+    if (!value) throw new Error('Paste an owner or member invite link to open a group.');
+    let token = value;
+    try {
+      const url = new URL(value);
+      token = url.searchParams.get('owner') || url.searchParams.get('member') || value;
+    } catch {
+      // A raw token is also accepted.
+    }
+    const group = await request(`/groups/${encodeURIComponent(token)}`, { token });
+    const balances = await request(`/groups/${encodeURIComponent(token)}/balances`, { token });
+    const role = group.accessRole || 'member';
+    const state = readState();
+    const normalized = normalizeGroup(group, {}, balances);
+    const tokens = role === 'owner'
+      ? { ownerToken: token, ...(await request(`/groups/${encodeURIComponent(token)}/links`, { token })) }
+      : { memberToken: token };
+    rememberGroup(state, normalized, tokens);
+    state.role = role;
+    const rememberedMember = state.memberIds[group.id];
+    state.currentMemberId = role === 'owner'
+      ? group.ownerMemberId
+      : group.members.some(member => member.id === rememberedMember) ? rememberedMember : null;
+    state.memberIds[group.id] = state.currentMemberId;
+    writeState(state);
+    return { groups: state.groups, activeGroupId: group.id, role, currentMemberId: state.currentMemberId };
   },
 
   async selectGroup(id) {

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime
+import json
+import os
+from pathlib import Path
 from secrets import token_urlsafe
 from uuid import uuid4
 
@@ -15,14 +18,44 @@ def new_id() -> str:
 
 
 class MockStore:
-    """Small in-memory store. Replace this class with a database repository later."""
+    """JSON-backed mock store. Replace this class with a database repository later."""
 
-    def __init__(self) -> None:
-        self.reset()
+    def __init__(self, storage_path: Path | None = None) -> None:
+        default_path = Path(__file__).resolve().parent.parent / "data" / "groups.json"
+        self.storage_path = Path(os.environ.get("OWESOME_DATA_FILE", default_path)) if storage_path is None else Path(storage_path)
+        self.groups: dict[str, dict] = {}
+        self.token_to_group: dict[str, str] = {}
+        self._load()
 
     def reset(self) -> None:
         self.groups: dict[str, dict] = {}
         self.token_to_group: dict[str, str] = {}
+        self._persist()
+
+    def _load(self) -> None:
+        try:
+            groups = json.loads(self.storage_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (json.JSONDecodeError, OSError):
+            return
+        if not isinstance(groups, dict):
+            return
+        self.groups = groups
+        self.token_to_group = {}
+        for group_id, group in self.groups.items():
+            owner_token = group.get("_ownerToken")
+            member_token = group.get("_memberToken")
+            if owner_token:
+                self.token_to_group[owner_token] = group_id
+            if member_token:
+                self.token_to_group[member_token] = group_id
+
+    def _persist(self) -> None:
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.storage_path.with_suffix(f"{self.storage_path.suffix}.tmp")
+        temporary_path.write_text(json.dumps(self.groups, ensure_ascii=False), encoding="utf-8")
+        temporary_path.replace(self.storage_path)
 
     def create_group(self, name: str, currency: str, creator_name: str) -> dict:
         group_id = new_id()
@@ -46,6 +79,7 @@ class MockStore:
         self.groups[group_id] = group
         self.token_to_group[owner_token] = group_id
         self.token_to_group[member_token] = group_id
+        self._persist()
         return deepcopy(group)
 
     def group_for_token(self, token: str) -> dict | None:
@@ -57,6 +91,10 @@ class MockStore:
         result.pop("_ownerToken", None)
         result.pop("_memberToken", None)
         return result
+
+    def save(self) -> None:
+        """Persist in-place group changes made by API handlers."""
+        self._persist()
 
 
 store = MockStore()

@@ -211,8 +211,16 @@ def create_group(payload: CreateGroupRequest) -> dict:
 
 @app.get("/groups/{token}", operation_id="getGroup")
 def get_group(token: Annotated[str, Path(min_length=32)], credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
-    group, _ = authenticated_group(token, credentials)
-    return store.public_group(group)
+    group, role = authenticated_group(token, credentials)
+    response = store.public_group(group)
+    response["accessRole"] = role
+    return response
+
+
+@app.get("/groups/{ownerToken}/links", operation_id="getGroupInviteLinks")
+def get_group_invite_links(ownerToken: str, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
+    group, _ = authenticated_group(ownerToken, credentials, required_role="owner")
+    return {"memberToken": group["_memberToken"]}
 
 
 @app.post("/groups/{ownerToken}/members", status_code=status.HTTP_201_CREATED, operation_id="addMember")
@@ -222,6 +230,7 @@ def add_member(ownerToken: str, payload: AddMemberRequest, credentials: Annotate
         fail(400, "bad_request", "A member with this name already exists")
     member = {"id": new_id(), "name": payload.name}
     group["members"].append(member)
+    store.save()
     return member
 
 
@@ -232,6 +241,7 @@ def join_group(memberToken: str, payload: AddMemberRequest, credentials: Annotat
         fail(401, "unauthorized", "Use the member invite link to join this group")
     member = {"id": new_id(), "name": payload.name}
     group["members"].append(member)
+    store.save()
     return member
 
 
@@ -252,6 +262,7 @@ def remove_member(ownerToken: str, memberId: UUID, credentials: Annotated[HTTPAu
         item for item in group["settlements"]
         if item["fromMemberId"] != str(memberId) and item["toMemberId"] != str(memberId)
     ]
+    store.save()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -262,6 +273,7 @@ def create_expense(ownerToken: str, payload: ExpenseInput, credentials: Annotate
     created = now_iso()
     expense = serialize_expense(payload, UUID(new_id()), created, created)
     group["expenses"].insert(0, expense)
+    store.save()
     return expense
 
 
@@ -274,6 +286,7 @@ def update_expense(ownerToken: str, expenseId: UUID, payload: ExpenseInput, cred
         fail(404, "not_found", "Expense not found")
     expense = serialize_expense(payload, expenseId, existing["createdAt"], now_iso())
     group["expenses"][group["expenses"].index(existing)] = expense
+    store.save()
     return expense
 
 
@@ -284,6 +297,7 @@ def delete_expense(ownerToken: str, expenseId: UUID, credentials: Annotated[HTTP
     if existing is None:
         fail(404, "not_found", "Expense not found")
     group["expenses"].remove(existing)
+    store.save()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -313,6 +327,7 @@ def report_settlement(memberToken: str, payload: ReportSettlementRequest, creden
         "confirmedAt": None,
     }
     group["settlements"].append(settlement)
+    store.save()
     return settlement
 
 
@@ -336,6 +351,7 @@ def confirm_settlement(ownerToken: str, settlementId: UUID, credentials: Annotat
         fail(400, "bad_request", "Settlement is no longer covered by the outstanding balance")
     settlement["status"] = "confirmed"
     settlement["confirmedAt"] = now_iso()
+    store.save()
     return settlement
 
 
@@ -345,6 +361,7 @@ def update_settings(ownerToken: str, payload: GroupSettingsPatch, credentials: A
     if not payload.model_fields_set or payload.simplifyDebts is None:
         fail(400, "bad_request", "At least one supported setting must be provided")
     group["simplifyDebts"] = payload.simplifyDebts
+    store.save()
     return {"simplifyDebts": group["simplifyDebts"]}
 
 
@@ -353,6 +370,7 @@ def create_recurring_expense(ownerToken: str, payload: RecurringExpenseInput, cr
     group, _ = authenticated_group(ownerToken, credentials, required_role="owner")
     schedule = serialize_recurring(payload, UUID(new_id()), now_iso())
     group["recurringExpenses"].append(schedule)
+    store.save()
     return schedule
 
 
@@ -363,4 +381,5 @@ def delete_recurring_expense(ownerToken: str, recurringExpenseId: UUID, credenti
     if schedule is None:
         fail(404, "not_found", "Recurring expense not found")
     group["recurringExpenses"].remove(schedule)
+    store.save()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

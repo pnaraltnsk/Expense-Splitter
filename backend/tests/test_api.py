@@ -4,14 +4,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.store import store
+from app.store import MockStore, store
 
 
 @pytest.fixture(autouse=True)
-def reset_store() -> Iterator[None]:
+def reset_store(tmp_path) -> Iterator[None]:
+    previous_path = store.storage_path
+    store.storage_path = tmp_path / "groups.json"
     store.reset()
     yield
     store.reset()
+    store.storage_path = previous_path
 
 
 @pytest.fixture
@@ -62,12 +65,53 @@ def test_get_group_allows_owner_or_member_and_hides_tokens(client: TestClient) -
         assert response.json()["id"] == group["id"]
         assert "ownerToken" not in response.json()
         assert "memberToken" not in response.json()
+        assert response.json()["accessRole"] == ("owner" if token == group["ownerToken"] else "member")
+
+
+def test_group_survives_store_restart(tmp_path) -> None:
+    path = tmp_path / "groups.json"
+    first_store = MockStore(path)
+    created = first_store.create_group("Weekend away", "EUR", "Pat")
+
+    restarted_store = MockStore(path)
+    recovered = restarted_store.group_for_token(created["_ownerToken"])
+
+    assert recovered is not None
+    assert recovered["id"] == created["id"]
+    assert recovered["members"][0]["name"] == "Pat"
+
+
+def test_api_changes_survive_store_restart(client: TestClient) -> None:
+    group = create_group(client)
+    added = client.post(
+        f"/groups/{group['ownerToken']}/members",
+        headers=owner_headers(group),
+        json={"name": "Alex"},
+    )
+    assert added.status_code == 201
+
+    restarted = MockStore(store.storage_path)
+    recovered = restarted.group_for_token(group["ownerToken"])
+
+    assert recovered is not None
+    assert [member["name"] for member in recovered["members"]] == ["Pat", "Alex"]
 
 
 def test_get_group_requires_valid_token(client: TestClient) -> None:
     group = create_group(client)
     assert client.get(f"/groups/{group['ownerToken']}").status_code == 401
     assert client.get(f"/groups/{group['ownerToken']}", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+def test_owner_can_retrieve_member_invite_after_reopening_group(client: TestClient) -> None:
+    group = create_group(client)
+    path = f"/groups/{group['ownerToken']}/links"
+
+    assert client.get(path, headers=member_headers(group)).status_code == 401
+    response = client.get(path, headers=owner_headers(group))
+
+    assert response.status_code == 200
+    assert response.json() == {"memberToken": group["memberToken"]}
 
 
 def test_owner_can_add_and_remove_member_but_member_cannot(client: TestClient) -> None:
