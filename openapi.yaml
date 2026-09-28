@@ -88,6 +88,33 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /groups/{memberToken}/join:
+    parameters:
+      - $ref: '#/components/parameters/MemberToken'
+    post:
+      tags: [Members]
+      operationId: joinGroup
+      summary: Join a group through its member invite link
+      description: Creates a participant using the name entered by the person joining. The owner token cannot be used for this operation.
+      security:
+        - memberToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMemberRequest'
+      responses:
+        '201':
+          description: Participant joined the group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /groups/{ownerToken}/members/{memberId}:
     parameters:
       - $ref: '#/components/parameters/OwnerToken'
@@ -378,7 +405,7 @@ components:
     CreateGroupRequest:
       type: object
       additionalProperties: false
-      required: [name, currency]
+      required: [name, currency, creatorName]
       properties:
         name:
           type: string
@@ -389,6 +416,10 @@ components:
           pattern: '^[A-Z]{3}$'
           description: ISO 4217 currency code used for all group expenses.
           example: EUR
+        creatorName:
+          type: string
+          minLength: 1
+          maxLength: 120
     CreatedGroup:
       allOf:
         - $ref: '#/components/schemas/Group'
@@ -403,7 +434,7 @@ components:
               description: Secret member access token. Show once and treat as a credential.
     Group:
       type: object
-      required: [id, name, currency, simplifyDebts, createdAt, members, expenses, settlements, recurringExpenses]
+      required: [id, name, currency, ownerMemberId, simplifyDebts, createdAt, members, expenses, settlements, recurringExpenses]
       properties:
         id:
           type: string
@@ -413,6 +444,10 @@ components:
         currency:
           type: string
           pattern: '^[A-Z]{3}$'
+        ownerMemberId:
+          type: string
+          format: uuid
+          description: Group participant ID for the creator, used to identify the owner when they open their owner link.
         simplifyDebts:
           type: boolean
         createdAt:

@@ -24,17 +24,19 @@ class MockStore:
         self.groups: dict[str, dict] = {}
         self.token_to_group: dict[str, str] = {}
 
-    def create_group(self, name: str, currency: str) -> dict:
+    def create_group(self, name: str, currency: str, creator_name: str) -> dict:
         group_id = new_id()
         owner_token = token_urlsafe(32)
         member_token = token_urlsafe(32)
+        owner_member_id = new_id()
         group = {
             "id": group_id,
             "name": name.strip(),
             "currency": currency,
             "simplifyDebts": True,
             "createdAt": now_iso(),
-            "members": [{"id": new_id(), "name": "You"}],
+            "ownerMemberId": owner_member_id,
+            "members": [{"id": owner_member_id, "name": creator_name.strip()}],
             "expenses": [],
             "settlements": [],
             "recurringExpenses": [],

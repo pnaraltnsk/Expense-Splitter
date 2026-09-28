@@ -1,34 +1,239 @@
-// All data access lives here. Replace these mocked functions with HTTP calls when the API exists.
-const STORAGE_KEY = 'owesome.mock.v1';
-const seed = {
-  groups: [{ id:'g1', name:'Lisbon long weekend', currency:'EUR', simplify:true, ownerToken:'owner-demo-token', memberToken:'member-demo-token', members:[
-    {id:'m1',name:'You'},{id:'m2',name:'Maya Chen'},{id:'m3',name:'Leo Martin'},{id:'m4',name:'Sam Rivera'}], expenses:[
-      {id:'e1',description:'Dinner at Taberna',amount:128.4,category:'Food',date:'2026-09-24',payers:[{memberId:'m2',amount:128.4}],participants:['m1','m2','m3','m4'],splitType:'equal'},
-      {id:'e2',description:'Airport transfer',amount:42,category:'Transport',date:'2026-09-24',payers:[{memberId:'m1',amount:42}],participants:['m1','m2','m3','m4'],splitType:'equal'},
-      {id:'e3',description:'Apartment · first night',amount:240,category:'Accommodation',date:'2026-09-23',payers:[{memberId:'m3',amount:240}],participants:['m1','m2','m3','m4'],splitType:'equal'},
-      {id:'e4',description:'Groceries & snacks',amount:36.8,category:'Food',date:'2026-09-23',payers:[{memberId:'m4',amount:36.8}],participants:['m1','m2','m3','m4'],splitType:'equal'}], settlements:[{id:'s1',from:'m1',to:'m2',amount:24,status:'pending',createdAt:'2026-09-25'}], recurring:[]
-  }], role:'owner', activeGroupId:'g1', currentMemberId:'m1'
+// All HTTP access is centralized here. The UI only receives normalized group data.
+const STORAGE_KEY = 'owesome.api.v1';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+
+function readState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    return {
+      groups: Array.isArray(saved.groups) ? saved.groups : [],
+      activeGroupId: saved.activeGroupId || null,
+      role: saved.role === 'member' ? 'member' : 'owner',
+      currentMemberId: saved.currentMemberId || null,
+      memberIds: saved.memberIds || {},
+    };
+  } catch {
+    return { groups: [], activeGroupId: null, role: 'owner', currentMemberId: null, memberIds: {} };
+  }
+}
+
+function writeState(state) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+async function request(path, { token, method = 'GET', body } = {}) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch {
+    throw new Error(`Can't reach the backend at ${API_BASE_URL}. Start FastAPI and try again.`);
+  }
+  if (response.status === 204) return null;
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(data?.message || `Backend request failed (${response.status})`);
+  return data;
+}
+
+function rememberGroup(state, group, tokens = {}) {
+  const previous = state.groups.find(item => item.id === group.id) || {};
+  const merged = { ...previous, ...group, ...tokens };
+  state.groups = [merged, ...state.groups.filter(item => item.id !== group.id)];
+  state.activeGroupId = group.id;
+  return merged;
+}
+
+function normalizeGroup(group, ref, balances) {
+  return {
+    ...ref,
+    ...group,
+    simplify: group.simplifyDebts,
+    recurring: group.recurringExpenses || [],
+    balances: (balances?.balances || []).map(balance => ({
+      from: balance.fromMemberId,
+      to: balance.toMemberId,
+      amount: balance.amount,
+    })),
+    settlements: (group.settlements || []).map(settlement => ({
+      ...settlement,
+      from: settlement.fromMemberId,
+      to: settlement.toMemberId,
+    })),
+  };
+}
+
+async function loadGroup(ref, role) {
+  const token = ref?.[`${role}Token`];
+  if (!token) throw new Error(`This browser doesn't have a ${role} link for this group.`);
+  const group = await request(`/groups/${encodeURIComponent(token)}`, { token });
+  const balances = await request(`/groups/${encodeURIComponent(token)}/balances`, { token });
+  return { group, balances };
+}
+
+function activeRef(state) {
+  const group = state.groups.find(item => item.id === state.activeGroupId);
+  if (!group) throw new Error('Choose or create a group first.');
+  return group;
+}
+
+function ownerToken(group) {
+  if (!group.ownerToken) throw new Error('Owner link is required for this action.');
+  return group.ownerToken;
+}
+
+export const api = {
+  async getApp() {
+    const state = readState();
+    const url = new URL(window.location.href);
+    const linkedRole = url.searchParams.has('owner') ? 'owner' : url.searchParams.has('member') ? 'member' : null;
+    const linkedToken = linkedRole && url.searchParams.get(linkedRole);
+
+    if (linkedToken) {
+      const group = await request(`/groups/${encodeURIComponent(linkedToken)}`, { token: linkedToken });
+      const links = linkedRole === 'owner' ? { ownerToken: linkedToken } : { memberToken: linkedToken };
+      rememberGroup(state, group, links);
+      state.role = linkedRole;
+      window.history.replaceState({}, '', `${url.pathname}${url.hash}`);
+    }
+
+    const ref = state.groups.find(item => item.id === state.activeGroupId) || state.groups[0];
+    if (!ref) return { groups: [], activeGroupId: null, role: state.role, currentMemberId: null };
+    state.activeGroupId = ref.id;
+    const { group, balances } = await loadGroup(ref, state.role);
+    const normalized = normalizeGroup(group, ref, balances);
+    rememberGroup(state, normalized, {
+      ownerToken: ref.ownerToken,
+      memberToken: ref.memberToken,
+    });
+    const rememberedMember = state.memberIds[normalized.id];
+    state.currentMemberId = state.role === 'owner'
+      ? normalized.ownerMemberId
+      : normalized.members.some(member => member.id === rememberedMember) ? rememberedMember : null;
+    state.memberIds[normalized.id] = state.currentMemberId;
+    writeState(state);
+    return { groups: state.groups, activeGroupId: normalized.id, role: state.role, currentMemberId: state.currentMemberId };
+  },
+
+  async selectGroup(id) {
+    const state = readState();
+    const group = state.groups.find(item => item.id === id);
+    if (!group) throw new Error('Group link is not available in this browser.');
+    state.activeGroupId = id;
+    state.role = group.ownerToken ? 'owner' : 'member';
+    writeState(state);
+    return this.getApp();
+  },
+
+  async joinGroup(name) {
+    const state = readState();
+    const group = activeRef(state);
+    if (!group.memberToken) throw new Error('Open the member invite link to join this group.');
+    const member = await request(`/groups/${encodeURIComponent(group.memberToken)}/join`, {
+      token: group.memberToken,
+      method: 'POST',
+      body: { name },
+    });
+    state.role = 'member';
+    state.currentMemberId = member.id;
+    state.memberIds[group.id] = member.id;
+    writeState(state);
+    return this.getApp();
+  },
+
+  async createGroup({ name, currency, creatorName }) {
+    const created = await request('/groups', { method: 'POST', body: { name, currency, creatorName } });
+    const state = readState();
+    rememberGroup(state, created, { ownerToken: created.ownerToken, memberToken: created.memberToken });
+    state.role = 'owner';
+    state.currentMemberId = created.ownerMemberId;
+    state.memberIds[created.id] = state.currentMemberId;
+    writeState(state);
+    return this.getApp();
+  },
+
+  async removeMember(id) {
+    const group = activeRef(readState());
+    await request(`/groups/${encodeURIComponent(ownerToken(group))}/members/${encodeURIComponent(id)}`, {
+      token: group.ownerToken, method: 'DELETE',
+    });
+    return this.getApp();
+  },
+
+  async saveExpense(input) {
+    const group = activeRef(readState());
+    const token = ownerToken(group);
+    const path = `/groups/${encodeURIComponent(token)}/expenses${input.id ? `/${encodeURIComponent(input.id)}` : ''}`;
+    const body = {
+      description: input.description,
+      amount: Number(input.amount),
+      category: input.category,
+      date: input.date,
+      payers: input.payers.map(payer => ({ memberId: payer.memberId, amount: Number(payer.amount) })),
+      participants: input.participants,
+      splitType: input.splitType,
+      ...(input.shares ? { shares: input.shares } : {}),
+    };
+    await request(path, { token, method: input.id ? 'PUT' : 'POST', body });
+    return this.getApp();
+  },
+
+  async deleteExpense(id) {
+    const group = activeRef(readState());
+    const token = ownerToken(group);
+    await request(`/groups/${encodeURIComponent(token)}/expenses/${encodeURIComponent(id)}`, { token, method: 'DELETE' });
+    return this.getApp();
+  },
+
+  async toggleSimplify() {
+    const group = activeRef(readState());
+    const token = ownerToken(group);
+    await request(`/groups/${encodeURIComponent(token)}/settings`, {
+      token, method: 'PATCH', body: { simplifyDebts: !group.simplify },
+    });
+    return this.getApp();
+  },
+
+  async markPaid({ to, amount }) {
+    const state = readState();
+    const group = activeRef(state);
+    const token = group[`${state.role}Token`];
+    await request(`/groups/${encodeURIComponent(token)}/settlements`, {
+      token, method: 'POST', body: { fromMemberId: state.currentMemberId, toMemberId: to, amount: Number(amount) },
+    });
+    return this.getApp();
+  },
+
+  async confirmSettlement(id) {
+    const group = activeRef(readState());
+    const token = ownerToken(group);
+    await request(`/groups/${encodeURIComponent(token)}/settlements/${encodeURIComponent(id)}/confirm`, { token, method: 'POST' });
+    return this.getApp();
+  },
+
+  async addRecurring(input) {
+    const group = activeRef(readState());
+    const token = ownerToken(group);
+    await request(`/groups/${encodeURIComponent(token)}/recurring-expenses`, {
+      token, method: 'POST', body: {
+        description: input.description,
+        amount: Number(input.amount),
+        category: input.category,
+        interval: input.interval,
+      },
+    });
+    return this.getApp();
+  },
+
+  async deleteRecurring(id) {
+    const group = activeRef(readState());
+    const token = ownerToken(group);
+    await request(`/groups/${encodeURIComponent(token)}/recurring-expenses/${encodeURIComponent(id)}`, { token, method: 'DELETE' });
+    return this.getApp();
+  },
 };
-let state;
-function load(){ if(state)return state; try{state=JSON.parse(localStorage.getItem(STORAGE_KEY))||clone(seed)}catch{state=clone(seed)} save(); return state; }
-function save(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state));}
-const clone=(x)=>JSON.parse(JSON.stringify(x));
-const wait=()=>new Promise(r=>setTimeout(r,120));
-export const api={
- async getApp(){await wait();return clone(load())},
- async selectGroup(id){load().activeGroupId=id;save();return this.getApp()},
- async setRole(role){load().role=role;save();return this.getApp()},
- async setMember(id){load().currentMemberId=id;save();return this.getApp()},
- async createGroup({name,currency}){await wait();const s=load();const group={id:crypto.randomUUID(),name,currency,simplify:true,ownerToken:crypto.randomUUID(),memberToken:crypto.randomUUID(),members:[{id:crypto.randomUUID(),name:'You'}],expenses:[],settlements:[],recurring:[]};s.groups.unshift(group);s.activeGroupId=group.id;s.role='owner';s.currentMemberId=group.members[0].id;save();return this.getApp()},
- async addMember(name){await wait();const g=active();g.members.push({id:crypto.randomUUID(),name});save();return this.getApp()},
- async removeMember(id){await wait();const g=active();g.members=g.members.filter(m=>m.id!==id);g.expenses.forEach(e=>{e.participants=e.participants.filter(x=>x!==id);e.payers=e.payers.filter(p=>p.memberId!==id)});g.settlements=g.settlements.filter(x=>x.from!==id&&x.to!==id);save();return this.getApp()},
- async saveExpense(input){await wait();const g=active();const expense={...input,id:input.id||crypto.randomUUID()};const i=g.expenses.findIndex(x=>x.id===expense.id);if(i<0)g.expenses.unshift(expense);else g.expenses[i]=expense;save();return this.getApp()},
- async deleteExpense(id){await wait();const g=active();g.expenses=g.expenses.filter(e=>e.id!==id);save();return this.getApp()},
- async toggleSimplify(){await wait();const g=active();g.simplify=!g.simplify;save();return this.getApp()},
- async markPaid({to,amount}){await wait();const g=active();g.settlements.unshift({id:crypto.randomUUID(),from:load().currentMemberId,to,amount:Number(amount),status:'pending',createdAt:new Date().toISOString().slice(0,10)});save();return this.getApp()},
- async confirmSettlement(id){await wait();const x=active().settlements.find(s=>s.id===id);if(x)x.status='confirmed';save();return this.getApp()},
- async addRecurring(input){await wait();active().recurring.push({...input,id:crypto.randomUUID()});save();return this.getApp()},
- async deleteRecurring(id){await wait();const g=active();g.recurring=g.recurring.filter(x=>x.id!==id);save();return this.getApp()},
- async resetDemo(){state=clone(seed);save();return this.getApp()}
-};
-function active(){const s=load();return s.groups.find(g=>g.id===s.activeGroupId)}

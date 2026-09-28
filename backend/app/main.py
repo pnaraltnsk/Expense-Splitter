@@ -202,7 +202,7 @@ def calculate_balances(group: dict) -> list[dict]:
 
 @app.post("/groups", status_code=status.HTTP_201_CREATED, operation_id="createGroup")
 def create_group(payload: CreateGroupRequest) -> dict:
-    group = store.create_group(payload.name, payload.currency)
+    group = store.create_group(payload.name, payload.currency, payload.creatorName)
     response = store.public_group(group)
     response["ownerToken"] = group["_ownerToken"]
     response["memberToken"] = group["_memberToken"]
@@ -220,6 +220,16 @@ def add_member(ownerToken: str, payload: AddMemberRequest, credentials: Annotate
     group, _ = authenticated_group(ownerToken, credentials, required_role="owner")
     if any(member["name"].casefold() == payload.name.casefold() for member in group["members"]):
         fail(400, "bad_request", "A member with this name already exists")
+    member = {"id": new_id(), "name": payload.name}
+    group["members"].append(member)
+    return member
+
+
+@app.post("/groups/{memberToken}/join", status_code=status.HTTP_201_CREATED, operation_id="joinGroup")
+def join_group(memberToken: str, payload: AddMemberRequest, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
+    group, role = authenticated_group(memberToken, credentials)
+    if role != "member":
+        fail(401, "unauthorized", "Use the member invite link to join this group")
     member = {"id": new_id(), "name": payload.name}
     group["members"].append(member)
     return member

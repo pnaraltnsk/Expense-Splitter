@@ -21,7 +21,7 @@ def client() -> Iterator[TestClient]:
 
 
 def create_group(client: TestClient) -> dict:
-    response = client.post("/groups", json={"name": "Weekend away", "currency": "EUR"})
+    response = client.post("/groups", json={"name": "Weekend away", "currency": "EUR", "creatorName": "Pat"})
     assert response.status_code == 201
     return response.json()
 
@@ -35,20 +35,21 @@ def member_headers(group: dict) -> dict[str, str]:
 
 
 def test_create_group_returns_group_and_two_secret_tokens(client: TestClient) -> None:
-    response = client.post("/groups", json={"name": "Weekend away", "currency": "EUR"})
+    response = client.post("/groups", json={"name": "Weekend away", "currency": "EUR", "creatorName": "Pat"})
 
     assert response.status_code == 201
     group = response.json()
     assert group["name"] == "Weekend away"
     assert group["currency"] == "EUR"
     assert group["ownerToken"] != group["memberToken"]
-    assert group["members"][0]["name"] == "You"
+    assert group["members"][0]["name"] == "Pat"
+    assert group["ownerMemberId"] == group["members"][0]["id"]
     assert group["expenses"] == []
     assert group["simplifyDebts"] is True
 
 
 def test_create_group_rejects_invalid_currency(client: TestClient) -> None:
-    response = client.post("/groups", json={"name": "Weekend away", "currency": "EURO"})
+    response = client.post("/groups", json={"name": "Weekend away", "currency": "EURO", "creatorName": "Pat"})
     assert response.status_code == 400
 
 
@@ -81,6 +82,17 @@ def test_owner_can_add_and_remove_member_but_member_cannot(client: TestClient) -
     removed = client.delete(f"{path}/{member_id}", headers=owner_headers(group))
     assert removed.status_code == 204
     assert all(m["id"] != member_id for m in client.get(f"/groups/{group['ownerToken']}", headers=owner_headers(group)).json()["members"])
+
+
+def test_member_invite_lets_each_person_join_with_their_own_name(client: TestClient) -> None:
+    group = create_group(client)
+    path = f"/groups/{group['memberToken']}/join"
+    assert client.post(path, json={"name": "Alex"}).status_code == 401
+    joined = client.post(path, headers=member_headers(group), json={"name": "Alex"})
+    assert joined.status_code == 201
+    assert joined.json()["name"] == "Alex"
+    details = client.get(f"/groups/{group['memberToken']}", headers=member_headers(group)).json()
+    assert joined.json() in details["members"]
 
 
 def test_owner_can_create_update_and_delete_expense(client: TestClient) -> None:

@@ -13,12 +13,20 @@ class StrictModel(BaseModel):
 class CreateGroupRequest(StrictModel):
     name: str = Field(min_length=1, max_length=120)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
+    creatorName: str = Field(min_length=1, max_length=120)
 
     @field_validator("name")
     @classmethod
     def name_not_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("name cannot be blank")
+        return value.strip()
+
+    @field_validator("creatorName")
+    @classmethod
+    def creator_name_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("creatorName cannot be blank")
         return value.strip()
 
 
